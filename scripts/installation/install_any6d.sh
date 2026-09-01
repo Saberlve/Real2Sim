@@ -118,7 +118,7 @@ ensure_cuda_toolkit() {
   fi
 
   echo "nvcc was not found at ${CUDA_HOME}/bin/nvcc; installing CUDA toolkit ${CUDA_VERSION} into ${ENV_NAME}"
-  mamba install -c nvidia "cuda-toolkit=${CUDA_VERSION}" -y > /dev/null
+  mamba install -c nvidia -c conda-forge -c defaults "cuda-toolkit=${CUDA_VERSION}" -y > /dev/null
   export CUDA_HOME="${CONDA_PREFIX}"
   export PATH="${CUDA_HOME}/bin:${PATH}"
   export LIBRARY_PATH="${CUDA_HOME}/lib64/stubs:${LIBRARY_PATH:-}"

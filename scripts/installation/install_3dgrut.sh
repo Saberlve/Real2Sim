@@ -156,11 +156,7 @@ fi
 # `mamba run -n "${env_name}"` in Step 3 resolves an env-local uv. Idempotent: skip if
 # the env already provides one.
 # ------------------------------------------------------------------------------
-if ! mamba run -n "${env_name}" command -v uv &>/dev/null; then
-  echo "Installing uv into '${env_name}' (pip)..."
-  mamba run -n "${env_name}" python -m pip install -U uv
-fi
-echo "  uv: $(mamba run -n "${env_name}" uv --version)"
+echo "Using conda environment '${env_name}' with its python/pip (no uv environment)"
 
 # ------------------------------------------------------------------------------
 # Step 3: install the project (+ Kaolin, ppisp, fused-ssim, slangc)
@@ -170,7 +166,7 @@ echo "  uv: $(mamba run -n "${env_name}" uv --version)"
 # re-applies the env's persisted nvcc/uv/CC/CXX/TORCH_* vars correctly.
 # ------------------------------------------------------------------------------
 echo "Installing 3dgrut project into '${env_name}'..."
-( cd "${THREEDGRUT_DIR}" && mamba run -n "${env_name}" bash install_env_uv.sh "${env_name}" )
+( cd "${THREEDGRUT_DIR}" && INSTALL_TCNN_WITH_UV=0 mamba run -n "${env_name}" bash install_env_uv.sh "${env_name}" )
 
 # ------------------------------------------------------------------------------
 # Step 4: (optional) torch-cache .so reference fix

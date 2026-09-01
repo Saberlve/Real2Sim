@@ -21,7 +21,7 @@ from PIL import Image
 from supervision import draw_rectangle
 import shutil
 
-from simfoundry.models.vlm import Gemini, Imagen3, FLUX1
+from simfoundry.models.vlm import Gemini, Imagen3, FLUX1, QwenImageEdit
 from simfoundry.models.sam_v3_gmask import SAM3
 from simfoundry.models.clip import CLIPEncoder
 from simfoundry.models.sbert import SBERTEncoder
@@ -510,6 +510,7 @@ REMOVAL_MODELS = {
     "gemini",
     "gemini-2.5-flash-image",
     "gemini-3-pro-image",
+    "qwen-image-2.0",
     "flux",
 }
 
@@ -519,6 +520,8 @@ DETECTION_MODELS = {
     "gemini-3-pro-preview",
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
+    "deepseek-v4-flash-vision-exp",
+    "qwen3-vl-flash",
 }
 
 PDA_GEOMETRIC_BACKENDS = {
@@ -890,6 +893,8 @@ def main(cfg):
             dtype=torch.bfloat16,
             device="cuda",
         )
+    elif removal_model_name == "qwen-image-2.0":
+        removal_model = QwenImageEdit(model=removal_model_name)
     else:
         raise NotImplementedError
 
@@ -995,7 +1000,7 @@ def main(cfg):
             "seed": 0,
             "print_results": cfg.visualize,
         }
-        if "gemini" in removal_model_name:
+        if "gemini" in removal_model_name or removal_model_name.startswith("qwen-image"):
             logger.info(f"Calling {removal_model_name} to upsample source image (may take up to 5 min)...")
             result = removal_model(
                 image_paths=source_resized_image_fpath,
@@ -1818,7 +1823,7 @@ def main(cfg):
                         logger.error("Failed to query image model for image generation.")
                         continue
                     removed_obj_img_raw = np.array(images[0])
-                elif "gemini" in removal_model_name:
+                elif "gemini" in removal_model_name or removal_model_name.startswith("qwen-image"):
                     result = removal_model(
                         image_paths=annotated_removal_image_fpath,
                         temperature=0,

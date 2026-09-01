@@ -54,7 +54,7 @@ Unlike prior scene reconstruction approaches, SimFoundry is fully modular: each 
 - `ffmpeg`
 - ~250 GB of free disk space for a full install
 - Hugging Face account
-- Google Cloud project or Gemini API key
+- Google Cloud project/Gemini API key, or a DeepSeek API key for the supported vision stages
 
 ## Quick Start
 
@@ -71,7 +71,7 @@ bash scripts/installation/install_everything.sh
 - [briaai/RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0)
 - Optional: [black-forest-labs/FLUX.1-Kontext-dev](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev)
 
-VLM stages run on **Google Cloud Vertex AI (Gemini)**. Set up a [gcloud project](https://console.cloud.google.com/welcome/new) with [Vertex AI enabled](https://docs.vectorize.io/build-deploy/external-service-setup/how-to/google-vertex-ai/create-a-gcp-service-account-for-google-vertex-ai/), then authenticate:
+By default, VLM stages run on **Google Cloud Vertex AI (Gemini)**. Set up a [gcloud project](https://console.cloud.google.com/welcome/new) with [Vertex AI enabled](https://docs.vectorize.io/build-deploy/external-service-setup/how-to/google-vertex-ai/create-a-gcp-service-account-for-google-vertex-ai/), then authenticate:
 
 ```bash
 export GCLOUD_PROJECT=<your-gcp-project>
@@ -80,6 +80,12 @@ hf auth login
 ```
 
 > **No GCP project?** Generate a Gemini API key at [AI Studio](https://aistudio.google.com/api-keys) and run `export GEMINI_API_KEY=<your-key>` instead.
+
+For vision understanding and image-editing stages, Qwen can be used instead: set
+`DASHSCOPE_API_KEY=<your-key>`. The default reconstruction config uses
+`qwen3-vl-flash` for understanding and `qwen-image-2.0` for image editing. See
+[the detailed setup notes](docs/AGENT_INSTALL.md#3d-qwen-vision-low-cost-default)
+for endpoint overrides.
 
 Alternatively, run the interactive login helper which covers all services at once:
 

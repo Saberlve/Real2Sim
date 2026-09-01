@@ -12,6 +12,17 @@ ASSET_DIR = f"{REPO_DIR}/assets" # TODO: maybe a way to detect this?
 CFG_DIR = f"{REPO_DIR}/scripts/cfg"
 DATA_DIR = f"{REPO_DIR}/Data"
 
+# Prefer the shared NAS1 checkpoints when available. Individual model wrappers
+# use these variables and fail clearly if the requested local checkpoint is absent.
+os.environ.setdefault(
+    "SIMFOUNDRY_SAM3_CHECKPOINT",
+    "/run/determined/NAS1/public/HuggingFace/facebook/sam3/sam3.pt",
+)
+os.environ.setdefault(
+    "SIMFOUNDRY_DINOV3_MODEL",
+    "/run/determined/NAS1/public/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+)
+
 
 def get_omnigibson_data_path() -> str:
     """Return the repo-local OmniGibson dataset root used by pipeline assets."""

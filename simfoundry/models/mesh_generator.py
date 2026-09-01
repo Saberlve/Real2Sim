@@ -295,6 +295,14 @@ class Hunyuan(MeshGenerator):
         # broke Pixal3D's NAF loader (`from src.model.naf import NAF`) with
         # "No module named 'src.model'" even when hunyuan was not the selected backend.
         cls.REPO_PATH = repo_path
+        import sys
+        sys.path.insert(0, f"{cls.REPO_PATH}/hy3dshape")
+        sys.path.insert(0, f"{cls.REPO_PATH}/hy3dpaint")
+        # The Hunyuan3D checkout keeps the Python wrapper and compiled CUDA
+        # extension one directory below hy3dpaint/custom_rasterizer.  Some
+        # installations have the extension built in-place but not installed
+        # into site-packages, so expose that package explicitly.
+        sys.path.insert(0, f"{cls.REPO_PATH}/hy3dpaint/custom_rasterizer")
 
     def create_pipelines(self, create_shape_pipeline, create_texture_pipeline):
         # Local import now to avoid dependency crashing depending on environment being run currently

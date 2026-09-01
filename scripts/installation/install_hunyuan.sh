@@ -155,7 +155,7 @@ mamba activate "$ENV_NAME"
 
 # Step 3.4b: Install CUDA toolkit INTO the env (provides nvcc + headers) and point the
 # build toolchain at it. Required to compile custom_rasterizer + DifferentiableRenderer.
-mamba install -y -c nvidia "cuda-toolkit=${CUDA_VERSION}"
+mamba install -y -c nvidia -c conda-forge -c defaults "cuda-toolkit=${CUDA_VERSION}"
 export CUDA_HOME="$CONDA_PREFIX"
 # conda's cuda-toolkit puts headers under targets/x86_64-linux/include (not include/),
 # and the libcuda stub under lib/stubs — expose both to the extension builds.
@@ -201,6 +201,21 @@ cd ../.. # back in root
 pip install -r requirements_hunyuan.txt
 pip install -e .
 
+# Re-pin the stage-7 runtime set after SimFoundry's requirements. The latter has
+# older NumPy-1-era pins for some packages, while the current Hunyuan path needs
+# these versions to match the installed torch/CUDA stack and the successful run.
+pip install \
+  "bpy==4.0.0" \
+  "diffusers==0.30.0" \
+  "transformers==4.46.0" \
+  "pytorch-lightning==1.9.5" \
+  "realesrgan==0.3.0" \
+  "basicsr==1.4.2" \
+  "fast-simplification==0.2.0" \
+  "pymeshlab==2022.2.post4" \
+  "xatlas==0.0.9" \
+  "trimesh==4.5.1"
+
 # Step 3.9: numpy-2 alignment — done LAST so nothing downstream reverts it. torch 2.7.0+cu128
 # (required for RTX 5090 / sm_120) is built against numpy 2.x; torch.from_numpy raises
 # "expected np.ndarray (got numpy.ndarray)" under numpy 1.x. The requirements pin numpy 1.24.4
@@ -215,6 +230,23 @@ pip install -e .
 pip uninstall -y opencv-python opencv-python-headless || true
 pip install --no-cache-dir \
   "numpy==2.2.6" "scipy==1.14.1" "open3d==0.19.0" "onnxruntime==1.19.2" "opencv-python-headless==4.11.0.86"
+
+# The extension is built in-place below hy3dpaint/custom_rasterizer. Its Python
+# wrapper is not reliably discoverable from a fresh conda activation, and the
+# shared Torch libraries live under site-packages/torch/lib rather than only under
+# $CONDA_PREFIX/lib. Persist both paths in the environment so stage 7 also works
+# from `mamba run` and from a new shell.
+HUNYUAN_ACTIVATE_DIR="${CONDA_PREFIX}/etc/conda/activate.d"
+HUNYUAN_ACTIVATE_HOOK="${HUNYUAN_ACTIVATE_DIR}/simfoundry_hunyuan_runtime.sh"
+mkdir -p "${HUNYUAN_ACTIVATE_DIR}"
+cat > "${HUNYUAN_ACTIVATE_HOOK}" <<EOF
+export SIMFOUNDRY_HUNYUAN_ROOT="${HUNYUAN_DIR}"
+export LD_LIBRARY_PATH="\${CONDA_PREFIX}/lib/python3.10/site-packages/torch/lib:\${CONDA_PREFIX}/lib\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}"
+export PYTHONPATH="${HUNYUAN_DIR}/hy3dpaint/custom_rasterizer\${PYTHONPATH:+:\${PYTHONPATH}}"
+EOF
+source "${HUNYUAN_ACTIVATE_HOOK}"
+
+python -c 'import custom_rasterizer as cr; assert callable(cr.rasterize); import custom_rasterizer_kernel; print("Verified Hunyuan custom_rasterizer import")'
 echo "Completed installation of Hunyuan3D environment: $ENV_NAME"
 
 mamba deactivate

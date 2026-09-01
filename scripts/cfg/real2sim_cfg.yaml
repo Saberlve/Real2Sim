@@ -12,7 +12,7 @@ scene_name: example_scene
 seed: 0
 visualize: false
 debug: false
-gcloud_project: ${oc.env:GCLOUD_PROJECT,null} # Google Cloud project id (required — Vertex AI backs all remote VLM stages). Reads $GCLOUD_PROJECT; replace with a literal id to hardcode it.
+gcloud_project: ${oc.env:GCLOUD_PROJECT,null} # Only required for Gemini/Vertex; DeepSeek uses DEEPSEEK_API_KEY.
 rerun_all: true
 low_vram: false
 
@@ -133,7 +133,7 @@ s3_ground:    # env: simfoundry
       support_coverage: 0.10      # how much of the frame the support surface fills
       plane_quality: 0.10         # RANSAC inlier ratio of the support plane fit
   use_fs: false  # Set to true to use FoundationStereo output (s2_fs) instead of Depth Anything (s2_da)
-  detection_model: gemini-3.1-pro-preview   # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3.1-pro-preview, gemini-3-flash-preview
+  detection_model: qwen3-vl-flash          # low-cost vision model; options include Gemini/DeepSeek/Qwen
 s4_frame:     # env: simfoundry
   rerun: true
   out_dirname: s4_frame
@@ -166,8 +166,8 @@ s5_scene:     # env: simfoundry
   merge_output_images: true
   crop_removal_images: true
   # vlm_model: gemini-2.5-pro     # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3-pro
-  detection_model: gemini-3.1-pro-preview   # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3.1-pro-preview, gemini-3-flash-preview
-  removal_model: gemini-3-pro-image     # options: gemini, gemini-3-pro-image, gemini-3-pro-image, flux
+  detection_model: qwen3-vl-flash          # low-cost vision model; options include Gemini/DeepSeek/Qwen
+  removal_model: qwen-image-2.0         # options: qwen-image-2.0, Gemini image models, flux
   min_detection_iterations: 3
   obj_removal_prompt_order: ["mask", "outline", "bbox"]   # options: mask, outline, bbox. For FLUX, use ["outline", "bbox"], mask is not stable.
   pda_K: 5
@@ -178,7 +178,7 @@ s6_upsample:      # env: simfoundry
   out_dirname: s6_upsample
   out_dir: "${root_dir}/${scene_name}/${s6_upsample.out_dirname}"
   sam_conf_threshold: 0.1
-  model: gemini-3-pro-image     # options: gemini, gemini-2.5-flash-image, gemini-3-pro-image, gpt, flux
+  model: qwen-image-2.0         # options: qwen-image-2.0, Gemini image models, gpt, flux
   validity_model: gemini
   infill: false    # If true, infill the object before upsampling
   check_valid: false  # If true, run validity check on each upsampled object
@@ -276,7 +276,7 @@ s8_pose:          # env: simfoundry
   est_refine_iter: 5  # Number of refinement iterations for FoundationPose
   object_indices: null  # null = all, or [1,2] for selective streaming/reruns
   canonicalize_front: true      # VLM front-pick; rotates the (uprighted) mesh front to +Z
-  front_pick_model: gemini-3.1-pro-preview
+  front_pick_model: qwen3-vl-flash
   # Fine yaw passes for tilt-baked (pixel-aligned) meshes ONLY — canonical backends land
   # exactly on the 45-degree grid and a re-pick can only move them off it.
   # front_refine: second VLM pass over +/-22.5 deg in 7.5-deg steps around the coarse pick.
@@ -299,6 +299,8 @@ s8_pose:          # env: simfoundry
   min_tilt_deg: 10.0        # below this the mesh already counts as upright — no bake, no churn
   max_tilt_deg: 80.0        # an implied tilt above this is treated as a failed fit — no bake
   tilt_consensus_deg: 20.0  # top fits must agree on the up axis within this angle to be trusted
+  canonicalize_front: true      # VLM front-pick; rotates mesh front to +Z before fitting
+  
   # use_any6d: true
   # resume_idx: Controls the interactive pose editing workflow (8b_match_object_poses_interactive.py)
   #   null  -> Normal mode: run pose fitting from scratch, auto-generate suffix for output
@@ -355,7 +357,7 @@ s11_sim:          # env: simfoundry
   rerun: true
   out_dirname: s11_sim
   out_dir: "${root_dir}/${scene_name}/${s11_sim.out_dirname}"
-  vlm_model: gemini-3.1-pro-preview   # options: gemini-2.5-pro, gemini-2.5-flash, gemini-3.1-pro-preview
+  vlm_model: qwen3-vl-flash
   object_indices: null
   parallel_workers: 2
   collision_method: coacd

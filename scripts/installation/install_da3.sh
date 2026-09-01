@@ -108,7 +108,7 @@ mamba activate "$ENV_NAME"
 # Install PyTorch
 pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 xformers==0.0.30 --index-url https://download.pytorch.org/whl/cu128 >> /dev/null
 pip install "setuptools<80"
-mamba install -y -c nvidia cuda-toolkit=12.8
+mamba install -y -c nvidia -c conda-forge -c defaults cuda-toolkit=12.8
 # Was pinned to tag v0.0.30 (tags are mutable); now the SHA that tag resolved to.
 pip install -v --no-build-isolation -U git+https://github.com/facebookresearch/xformers.git@4cf69f0967128217f1798de70b3e4477de138570#egg=xformers
 echo "Installed PyTorch, xformers, and CUDA toolkit 12.8 for DA3"

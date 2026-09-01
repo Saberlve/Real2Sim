@@ -99,7 +99,7 @@ fi
 # warning — splatfacto runs fine on 1.5.3 (verified end-to-end).
 # ------------------------------------------------------------------------------
 mamba run -n "${env_name}" pip install gsplat==1.5.3
-mamba install -y -n "${env_name}" -c nvidia cuda-toolkit=12.8
+mamba install -y -n "${env_name}" -c nvidia -c conda-forge -c defaults cuda-toolkit=12.8
 
 echo "Verifying nerfstudio_simfoundry env..."
 mamba run -n "${env_name}" python -c "import hydra, torch, gsplat; print('ns env OK: torch', torch.__version__, '| gsplat', gsplat.__version__, '| cuda', torch.cuda.is_available())"

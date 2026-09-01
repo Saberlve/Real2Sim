@@ -13,7 +13,7 @@ Don't forget to register API key from openai / Gemini CLI!
 import cv2
 import logging
 
-from simfoundry.models.vlm import GPT, FLUX1, Gemini
+from simfoundry.models.vlm import GPT, FLUX1, Gemini, QwenImageEdit
 from simfoundry.utils.prompt_utils import prompt_upsample_image, prompt_upsample_image_rotate, \
     prompt_flux_object_completion_and_upsample_preserve, prompt_upsample_image_gemini, prompt_infill_image, prompt_infill_image_no_conditioning, \
     prompt_check_object_validity, parse_json_response
@@ -41,6 +41,7 @@ UPSAMPLE_MODELS = {
     "gemini",
     "gemini-2.5-flash-image",
     "gemini-3-pro-image",
+    "qwen-image-2.0",
     "gpt",
     "flux",
 }
@@ -134,6 +135,11 @@ def main(cfg):
         # Flux prompt is object-specific; format it inside the per-object loop.
         upsample_prompt = None
         infill_prompt = None
+    elif model_name == "qwen-image-2.0":
+        model = QwenImageEdit(model=model_name)
+        for (out_w, out_h) in model.IMAGE_SHAPES:
+            ratios[(out_w, out_h)] = {"ratio": out_w / out_h}
+        upsample_prompt = prompt_upsample_image()
     else:
         raise NotImplementedError
 
@@ -191,6 +197,8 @@ def main(cfg):
             )
             if result is None:
                 raise RuntimeError(f"Gemini returned no result for {task} on [{obj_phrase}] at {img_path}")
+        elif model_name == "qwen-image-2.0":
+            result = model(prompt=prompt, image_paths=img_path, seed=0, print_results=cfg.visualize)
         elif model_name == "gpt":
             assert isinstance(model, GPT)
             result = model(

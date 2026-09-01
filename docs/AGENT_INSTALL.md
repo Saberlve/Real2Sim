@@ -135,12 +135,14 @@ done
 ```
 
 `black-forest-labs/FLUX.1-Kontext-dev` is optional — only needed if a config sets
-`model: flux`. The default configs use Gemini.
+`model: flux`. Legacy configs may use Gemini; the current reconstruction defaults use
+Qwen as described below.
 
-### 3b. Google Cloud / Gemini
+### 3b. Google Cloud / Gemini (optional when using Qwen)
 
-All VLM stages (A stages 3, 5, 6, 11 and the whole B pipeline) need Gemini. There are
-two routes:
+Only stages/configurations that select a Gemini model need Gemini credentials. Qwen is
+the low-cost default for the reconstruction VLM/image stages described in §3d. If a
+configuration still selects Gemini, there are two authentication routes:
 
 **Vertex AI (default).** Needs Application Default Credentials, which require an
 interactive browser flow an agent cannot perform:
@@ -168,10 +170,56 @@ falls back to Vertex+ADC otherwise. A file named `api_keys.txt` in the repo root
 any parent dir) is auto-loaded into the environment by `load_api_keys()`, so
 `GEMINI_API_KEY=...` in `<repo>/api_keys.txt` works without exporting anything.
 
+### 3c. DeepSeek V4 Flash Vision
+
+The VLM adapter also supports DeepSeek's OpenAI-compatible vision model
+`deepseek-v4-flash-vision-exp`. Add the key to the repo-root `api_keys.txt` (or export
+it) and select that model in the relevant YAML stage:
+
+```text
+DEEPSEEK_API_KEY=<key>
+```
+
+For example, set `s3_ground.detection_model` and/or `s5_scene.detection_model` to
+`deepseek-v4-flash-vision-exp`. The default endpoint is `https://api.deepseek.com`;
+set `DEEPSEEK_BASE_URL` only when using a compatible proxy. `gcloud_project` and
+Gemini credentials are not needed by those DeepSeek calls. This model is experimental,
+so its availability and API behavior may change.
+
+### 3d. Qwen vision (low-cost default)
+
+The default reconstruction configuration uses `qwen3-vl-flash` for vision understanding
+and `qwen-image-2.0` for image removal/upsampling in stages 5 and 6. Export the DashScope
+key before running:
+
+```bash
+export DASHSCOPE_API_KEY=<key>
+```
+
+The adapter uses the OpenAI-compatible DashScope endpoint
+`https://dashscope.aliyuncs.com/compatible-mode/v1` for Qwen-VL. Override it with
+`DASHSCOPE_BASE_URL` when using a workspace or another region. Qwen Image editing uses
+the native endpoint; override it with `DASHSCOPE_IMAGE_API_URL` if needed. The adapter
+downloads the temporary output URL immediately, as DashScope output URLs expire.
+
+### 3e. Local NAS1 vision checkpoints
+
+When `/run/determined/NAS1` is mounted, SimFoundry uses the local NAS1 SAM3 checkpoint
+instead of downloading `facebook/sam3`:
+
+```bash
+export SIMFOUNDRY_SAM3_CHECKPOINT=/run/determined/NAS1/public/HuggingFace/facebook/sam3/sam3.pt
+export SIMFOUNDRY_DINOV3_MODEL=/run/determined/NAS1/public/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
+```
+
+The current A reconstruction code does not instantiate a DINOv3 encoder directly;
+the DINOv3 path is exposed for components that do. Override either variable when
+running on a machine with a different NAS mount.
+
 Note this root `api_keys.txt` is a *different file* from
 `scripts/installation/api_keys.txt` used by `login_services.sh`.
 
-### 3c. Non-interactive login
+### 3f. Non-interactive login
 
 ```bash
 bash scripts/installation/login_services.sh --default
@@ -221,6 +269,12 @@ print('lerobot   ', lerobot.__version__)
 print('numpy     ', numpy.__version__)
 print('torch     ', torch.__version__, 'cuda', torch.cuda.is_available())
 print('simfoundry', simfoundry.__file__)"
+
+# Stage-7 and VLM-specific runtime checks
+mamba run -n hunyuan python -c \
+  "import bpy, diffusers, pytorch_lightning, trimesh, xatlas; import custom_rasterizer as cr; assert callable(cr.rasterize)"
+mamba run -n simfoundry python -c \
+  "import flash_attn; assert flash_attn.__version__ == '2.7.4.post1'"
 
 # Stage plans (executes nothing)
 bash scripts/pipeline/A_reconstruction/run.sh --dry-run --include 1b,2
@@ -308,34 +362,77 @@ mamba run -n simfoundry python -c "import numpy; print(numpy.__version__)"   # e
 Stage 2c runs in `nerfstudio_simfoundry`, not `simfoundry`. It is opt-in — omit
 `--bg-splat` if you did not build that env.
 
-### Out of VRAM at stage 7 on a 24 GiB card
+### Stage 7 Hunyuan missing packages or `custom_rasterizer` import errors
 
-`s7_mesh.low_vram` defaults to `false`, which needs **~29 GB** for shape generation —
-more than a 24 GiB card has (`docs/INSTALL.md` documents this). On 24 GiB, always pass:
+Stage 7 runs in the separate `hunyuan` environment. The installer must install the
+runtime packages explicitly, even though most are listed by upstream Hunyuan3D:
+`bpy==4.0.0`, `diffusers==0.30.0`, `transformers==4.46.0`,
+`pytorch-lightning==1.9.5`, `realesrgan==0.3.0`, `basicsr==1.4.2`,
+`fast-simplification==0.2.0`, `pymeshlab==2022.2.post4`, `xatlas==0.0.9`, and
+`trimesh==4.5.1`. DeepSpeed is intentionally excluded from the runtime install: it
+is not imported by the reconstruction path and its metadata build can abort the whole
+requirements transaction.
+
+The installer also writes
+`$CONDA_PREFIX/etc/conda/activate.d/simfoundry_hunyuan_runtime.sh`, which exposes the
+in-place rasterizer package and Torch's shared libraries. After activating `hunyuan`,
+verify it before running stage 7:
 
 ```bash
--- s7_mesh.low_vram=true
+mamba activate hunyuan
+python -c 'import custom_rasterizer as cr; assert callable(cr.rasterize); print("custom_rasterizer OK")'
 ```
 
-**Do not add `--no-stream` reflexively.** With the `hunyuan` backend, `low_vram=true` alone
-was sufficient on a 4090: stage 7 ran 9m 4s across 3 streamed calls with no OOM. Reach for
-`--no-stream` only if the streaming scheduler actually stalls or rejects the stage — it
-serialises stages 5-8 and reloads the model per object, which is much slower.
+If the environment predates this installer change, repair the current shell manually:
+
+```bash
+export PYTHONPATH="$PWD/deps/Hunyuan3D-2.1/hy3dpaint/custom_rasterizer:${PYTHONPATH:-}"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.10/site-packages/torch/lib:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+```
+
+### Stage 7 VRAM / Hunyuan `low_vram` device mismatch
+
+The current Hunyuan integration's `enable_model_cpu_offload()` path can fail with
+`Expected all tensors to be on the same device, cuda:0 and cpu`. Therefore do not rely
+on `s7_mesh.low_vram=true` as the generic fix. Use `low_vram=false` when the card can
+hold the shape model, and reduce peak memory by running shape and texture as two
+separate invocations:
+
+```bash
+export PYTHONPATH="$PWD/deps/Hunyuan3D-2.1/hy3dpaint/custom_rasterizer:${PYTHONPATH:-}"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.10/site-packages/torch/lib:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+
+# Shape pass
+mamba run -n hunyuan python scripts/pipeline/A_reconstruction/stages/7_generate_object_meshes.py \
+  root_dir=/path/to/SimFoundry/Data scene_name=<name> \
+  s1_video.video_fpath=/path/to/video.mp4 \
+  s7_mesh.low_vram=false s7_mesh.generate_shape=true s7_mesh.generate_texture=false
+
+# Texture pass; reuses the shape artifacts
+mamba run -n hunyuan python scripts/pipeline/A_reconstruction/stages/7_generate_object_meshes.py \
+  root_dir=/path/to/SimFoundry/Data scene_name=<name> \
+  s1_video.video_fpath=/path/to/video.mp4 \
+  s7_mesh.low_vram=false s7_mesh.generate_shape=false s7_mesh.generate_texture=true
+```
+
+On a card that cannot hold the shape model even with the split, reduce
+`s7_mesh.object_indices` and process objects in smaller batches. `--no-stream` is a
+separate scheduling option and does not repair the device mismatch.
 
 ---
 
 ## 7. Running the pipeline
 
-These commands were verified end-to-end on a 24 GiB card. The only override needed is
-`s7_mesh.low_vram=true`, and only on ~24 GiB cards (see §6).
+These commands describe the standard end-to-end flow. For Hunyuan stage 7, use the
+split shape/texture procedure in §6 when `low_vram=true` triggers the device mismatch.
 
 ```bash
-export GCLOUD_PROJECT=<project>   # config reads it; auth may still use GEMINI_API_KEY
+# Only needed for stages/configs that select Gemini or Vertex-backed services.
+export GCLOUD_PROJECT=<project>
 
 # A — reconstruction (~20 min for a 3-object tabletop scene)
 bash scripts/pipeline/A_reconstruction/run.sh \
-  --scene-name <name> --video-fpath /path/to/video.mov \
-  -- s7_mesh.low_vram=true
+  --scene-name <name> --video-fpath /path/to/video.mov
 
 # B — augmentation
 bash scripts/pipeline/B_augmentation/run.sh --scene-name <name>
@@ -344,16 +441,23 @@ bash scripts/pipeline/B_augmentation/run.sh --scene-name <name>
 bash scripts/pipeline/C_application/run.sh --scene-name <name> --mode smoke-random
 ```
 
-| Override | Prevents |
-|---|---|
-| `s7_mesh.low_vram=true` (24 GiB cards) | stage 7 OOM — the default needs ~29 GB |
+For Hunyuan stage 7, `s7_mesh.low_vram=false` is the reliable setting for the current
+integration. On smaller cards, run the shape and texture passes separately as shown in
+§6 and optionally restrict `s7_mesh.object_indices`.
 
-**Expect benign noise in the logs**, none of it fatal:
-- `Error importing diffusers ... Requires Flash-Attention >=2.7.1,<=2.7.4 but got 2.8.3` —
-  printed by every VLM stage; disables only the FLUX backend.
+**Expect some benign noise in headless logs**, none of it fatal:
 - `AttributeError: 'NoneType' object has no attribute 'GetCamera'` from
   `omni.kit.widget.viewport` — Isaac Sim's headless shutdown, fires repeatedly in stages
   11-14.
+
+The installer pins SimFoundry's Flash-Attention to `2.7.4.post1`, which satisfies the
+diffusers/Flux compatibility check (`>=2.7.1` and the 2.7.4 line). If a pre-existing
+environment still reports `got 2.8.3`, reinstall it with:
+
+```bash
+mamba run -n simfoundry python -m pip install --no-build-isolation \
+  "flash-attn==2.7.4.post1"
+```
 
 Filter both out when monitoring, or real failures get lost in them.
 
@@ -393,3 +497,273 @@ Env-name overrides, if yours differ from the defaults:
 
 There is **no** `b1k` env, and none is needed — `--env-b1k` defaults to `simfoundry`
 in all three pipelines. Pass it only if you keep OmniGibson in a separate environment.
+
+---
+
+## 9. Installation incident log (2026-08)
+
+This section records the problems encountered during the last full installation. Keep
+these rules when repeating the installation; they prevent the same failures from being
+reintroduced by a future agent or by a fresh checkout.
+
+### 9.1 Conda-only policy
+
+The installation was initially mixed between `uv` and Conda. This is unsafe here:
+`uv` can create an environment that is different from the environment selected by the
+installer, and compiled CUDA packages then land in the wrong prefix. The project was
+standardized on the existing Conda environments:
+
+- Do not create a `.venv` or install an environment with `uv`.
+- Use `mamba create`, `mamba install`, and the selected environment's
+  `python -m pip` only.
+- `install_3dgrut.sh` and the vendored 3DGRUT install helpers were adjusted to avoid
+  installing or invoking `uv`; `INSTALL_TCNN_WITH_UV=0` is used for that installer.
+- Always validate compiled modules with `mamba run -n <env> ...` or after activating
+  the environment. Calling an environment's Python by an absolute path can omit its
+  CUDA library activation and produce misleading `libc10.so` errors.
+
+### 9.2 Proxy, credentials, and cloning
+
+All network operations must inherit the proxy and credentials configured in the user's
+shell startup file:
+
+```bash
+source ~/.bashrc
+git clone ...
+hf download ...
+python -m pip install ...
+```
+
+The HF token was already provided as `HF_TOKEN` in `~/.bashrc`; do not print it, put it
+in a log, or start an interactive `hf auth login`. Google Cloud login was deliberately
+not performed. SAM and DINOv3 were already available on NAS1, so they must not be
+downloaded again unless the NAS paths are absent.
+
+If a clone or model download fails with a network error, first confirm that the command
+was run after `source ~/.bashrc`; do not replace the configured proxy with a hard-coded
+proxy value.
+
+### 9.3 CUDA toolkit solver failures
+
+Several installers originally requested `cuda-toolkit` from only the NVIDIA channel.
+Mamba could not solve or locate the requested package in that configuration. The CUDA
+toolkit installs now specify compatible channels explicitly:
+
+```bash
+mamba install -y -c nvidia -c conda-forge -c defaults cuda-toolkit=12.8
+```
+
+The same channel policy is used by Hunyuan3D, DA3, Any6D, and Nerfstudio. A local
+`simfoundry-condarc` keeps the channel order reproducible. Do not let 3DGRUT silently
+select CUDA 12.9: its environment must use CUDA 12.8 to match the PyTorch `cu128`
+build and the compiled extensions.
+
+### 9.4 Hunyuan3D dependency installation aborted by DeepSpeed
+
+Hunyuan3D's unfiltered requirements install attempted to build/install DeepSpeed before
+the environment's CUDA compiler variables were ready. Its metadata step failed and
+aborted the entire requirements transaction, leaving ordinary packages such as
+`trimesh`, `diffusers`, and `transformers` missing. The repair was:
+
+1. Install the environment CUDA toolkit and export `CUDA_HOME`, include paths, and
+   library paths first.
+2. Install requirements while excluding `deepspeed` and third-party mirror index
+   options.
+3. Install the required `trimesh` version explicitly, then finish the Hunyuan and
+   SimFoundry editable installs.
+
+Do not interpret a failed DeepSpeed build as evidence that the whole Hunyuan
+environment is usable.
+
+### 9.5 FAISS GPU package mismatch
+
+DA3 uses Python 3.11, but the Conda `faiss-gpu=1.12` build available from the selected
+channels was only for Python 3.10. Mamba therefore could not solve FAISS for DA3. The
+working Python 3.11 CUDA 12 wheel is:
+
+```bash
+mamba run -n da3 python -m pip install faiss-gpu-cu12==1.12.0
+```
+
+Any6D uses Python 3.10, so its compatible Conda package can be installed normally:
+
+```bash
+mamba install -n any6d --override-channels \
+  -c pytorch -c conda-forge faiss-gpu=1.12 -y
+```
+
+Verify both with `faiss.get_num_gpus()` and ensure it reports the visible GPUs. Do not
+blindly use the Python 3.10 Conda build in DA3.
+
+### 9.6 Any6D CUDA extension import error
+
+`common` and `gridencoder` were successfully compiled, but importing them through an
+unactivated absolute-path interpreter reported `libc10.so: cannot open shared object
+file`. This was an environment activation/library-path issue, not a failed build.
+Validate as follows:
+
+```bash
+source ~/.bashrc
+mamba run -n any6d python -c \
+  "import torch, common, gridencoder; print(torch.cuda.is_available())"
+```
+
+The final Any6D check must also import `sam2`, `bop_toolkit_lib`, and `simfoundry`.
+
+### 9.7 3DGRUT build and Kaolin imports
+
+The original 3DGRUT helper installed `uv` and selected a CUDA 12.9 toolkit. This caused
+toolchain inconsistency and had to be replaced with Conda's Python/pip workflow and
+CUDA 12.8. After the native extensions built, Kaolin still failed at import time due
+to missing runtime Python dependencies. Installing the following resolved the import:
+
+```bash
+mamba run -n 3dgrut python -m pip install \
+  pygltflib comm flask ipycanvas ipyevents pybind11 warp-lang 'jupyter_client<8'
+```
+
+The final check must import `threedgrut`, `tinycudann`, `kaolin`, `ppisp`, and
+`fused_ssim` from `mamba run -n 3dgrut`.
+
+### 9.8 Checkpoint script argument and download completion
+
+The requested command with a trailing repository argument failed because the script
+does not accept positional arguments:
+
+```text
+Unknown option: .
+```
+
+The correct command is:
+
+```bash
+source ~/.bashrc
+bash scripts/installation/download_checkpoints.sh --default
+```
+
+The script is idempotent. Re-running it is safe when a Google Drive or Hugging Face
+download is interrupted. Always wait for `All checkpoints accounted for.` and verify
+the files, rather than relying only on the process exit status. RMBG-2.0 belongs in
+`$DATA_HOME/RMBG-2.0`; the existing NAS1 SAM/DINOv3 assets should remain referenced in
+place.
+
+### 9.9 Final repeatable audit
+
+Run this after any repair or resumed installation. It catches the key failures above
+without importing through the wrong Python prefix:
+
+```bash
+source ~/.bashrc
+for env in simfoundry da3 hunyuan any6d void nerfstudio_simfoundry 3dgrut; do
+  mamba run -n "$env" python -c \
+    "import torch; print('$env', torch.__version__, torch.cuda.is_available())" || exit 1
+done
+
+mamba run -n da3 python -c \
+  "import faiss; print(faiss.__version__, faiss.get_num_gpus())"
+mamba run -n any6d python -c \
+  "import common, gridencoder, sam2, bop_toolkit_lib"
+mamba run -n 3dgrut python -c \
+  "import threedgrut, tinycudann, kaolin, ppisp, fused_ssim"
+test -s "$DATA_HOME/RMBG-2.0/model.safetensors"
+bash scripts/installation/download_checkpoints.sh --default
+```
+
+### 9.10 Hunyuan stage-7 runtime and CUDA library paths
+
+During the first stage-7 attempt, `trimesh`, `cv2`, and then
+`pytorch_lightning` were missing because the upstream Hunyuan requirements transaction
+was interrupted by DeepSpeed. The installer now excludes DeepSpeed, explicitly installs
+the complete runtime set, and re-pins the NumPy-2-compatible packages after the
+SimFoundry editable install. The final OpenCV package is
+`opencv-python-headless==4.11.0.86`; do not install a second `opencv-python` variant
+afterwards.
+
+The compiled `custom_rasterizer_kernel` links against `libc10.so` and related Torch
+libraries under `site-packages/torch/lib`. Merely activating the conda environment is
+not sufficient on every machine, so `install_hunyuan.sh` persists both
+`LD_LIBRARY_PATH` and `PYTHONPATH` in the Hunyuan activation hook and runs an import
+smoke test before finishing.
+
+### 9.11 Flash-Attention and optional FLUX imports
+
+The VLM module imports diffusers' Flux Kontext pipeline while loading the VLM adapter.
+That import checks Flash-Attention even when the selected model is Qwen. Version 2.8.3
+failed with:
+
+```text
+Requires Flash-Attention version >=2.7.1,<=2.7.4 but got 2.8.3
+```
+
+`install_simfoundry.sh` now installs and verifies `flash-attn==2.7.4.post1`. Do not
+replace it with the previously commented 2.8.3 wheel in the installer.
+
+### 9.12 NAS1 model cache and local vision assets
+
+When NAS1 is mounted, the SimFoundry activation hook automatically uses these files if
+they exist:
+
+```text
+/run/determined/NAS1/public/HuggingFace/facebook/sam3/sam3.pt
+/run/determined/NAS1/public/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
+/run/determined/NAS1/public/HuggingFace/vla/hub/
+```
+
+It sets `SIMFOUNDRY_SAM3_CHECKPOINT`, `SIMFOUNDRY_DINOV3_MODEL`, `HF_HOME`, and
+`HF_HUB_CACHE` only when the corresponding variables were not already provided by the
+user. This prevents a fresh install from downloading SAM3, DINOv3, or Prior Depth
+Anything again when the local cache is available.
+
+### 9.13 Headless Omniverse and USD import
+
+Stages 10-13 can run without an X server. The installer persists
+`OMNI_KIT_ACCEPT_EULA=YES` and `OMNIGIBSON_HEADLESS=1` in the SimFoundry activation
+hook. For a completely display-less shell, also prepare a private runtime directory:
+
+```bash
+export DISPLAY=
+export XDG_RUNTIME_DIR=/tmp/simfoundry-runtime
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+```
+
+GLFW, audio, NGX, and viewport-camera warnings can still appear during Isaac Sim
+startup or teardown. Treat them as warnings if the stage writes its success marker and
+USD output; do not install a GUI desktop stack just to silence those messages.
+
+### 9.14 Optional Newton cross-project smoke test
+
+The SimFoundry installer does not own the tactile-benchmark environment. After the USD
+stages succeed, its local Newton check should be run from the sibling project with that
+project's Python and source path:
+
+```bash
+cd ../tactile-benchmark
+PYTHONPATH=. .venv/bin/python -c '
+from tacsim.newton_runtime import activate_newton
+activate_newton()
+import newton.usd
+print("Newton USD import OK")
+'
+```
+
+Do not use the system Python for this check and do not install a second Newton copy into
+SimFoundry. The benchmark's `third_party/newton` checkout and `usd-core` belong to its
+`.venv`.
+
+### 9.15 Reconstruction stage names and USD artifacts
+
+There is no `9_generate_scene.py` in the current checkout. The final A stages are:
+
+```text
+9_compile_scene.py
+10_make_objects_sim_ready.py
+11_stabilize_physics.py
+12_import_usd.py
+13_create_og_scene.py
+```
+
+Stage 12 imports the object USD files into the BEHAVIOR-1K asset tree; stage 13 creates
+the OmniGibson scene wrapper. A successful stage-10 log alone is not the final USD
+check. Check `s12_usd/stage_info.json`, then inspect the generated object USD under
+`deps/BEHAVIOR-1K/datasets/real2sim-assets/objects/`.

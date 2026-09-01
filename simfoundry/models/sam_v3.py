@@ -27,6 +27,16 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 SAM3_ROOT = os.path.join(os.path.dirname(sam3.__file__), "..")
+SAM3_CHECKPOINT = os.environ.get(
+    "SIMFOUNDRY_SAM3_CHECKPOINT",
+    "/run/determined/NAS1/public/HuggingFace/facebook/sam3/sam3.pt",
+)
+
+
+def _local_sam3_checkpoint():
+    if not os.path.isfile(SAM3_CHECKPOINT):
+        raise FileNotFoundError(f"SAM3 local checkpoint not found: {SAM3_CHECKPOINT}")
+    return SAM3_CHECKPOINT
 
 
 class SAM3(torch.nn.Module):
@@ -50,9 +60,18 @@ class SAM3(torch.nn.Module):
         if video:
             assert self.device == "cuda", "Must set device=cuda when using SAM3 video model!"
             gpus_to_use = range(torch.cuda.device_count()) if n_video_devices == -1 else n_video_devices
-            model = build_sam3_video_predictor(gpus_to_use=gpus_to_use)
+            model = build_sam3_video_predictor(
+                gpus_to_use=gpus_to_use,
+                checkpoint_path=_local_sam3_checkpoint(),
+                load_from_HF=False,
+            )
         else:
-            raw_model = build_sam3_image_model(bpe_path=bpe_path, enable_inst_interactivity=enable_inst_interactivity)
+            raw_model = build_sam3_image_model(
+                bpe_path=bpe_path,
+                enable_inst_interactivity=enable_inst_interactivity,
+                checkpoint_path=_local_sam3_checkpoint(),
+                load_from_HF=False,
+            )
             model = Sam3Processor(raw_model, confidence_threshold=confidence_threshold)
         self.model = model
         self.video = video

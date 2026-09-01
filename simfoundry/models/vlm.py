@@ -2,10 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import mimetypes
 import os
 import random
 import re
 import time
+import json
+import urllib.request
+import urllib.error
 from io import BytesIO
 from types import SimpleNamespace
 from openai import OpenAI
@@ -130,6 +134,12 @@ load_api_keys()
 
 
 GEMINI_API_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+DEEPSEEK_API_KEY_ENVS = ("DEEPSEEK_API_KEY",)
+DEEPSEEK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+QWEN_API_KEY_ENVS = ("DASHSCOPE_API_KEY",)
+QWEN_VISION_MODEL = "qwen3-vl-flash"
+QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 def resolve_gemini_auth(project=None, location="global", api_key=None, backend=None):
@@ -476,6 +486,25 @@ class _CachedImagenResult:
         self._pil_image = image
 
 
+class _OpenAIChoice:
+    def __init__(self, text):
+        self.message = SimpleNamespace(content=text)
+
+
+class _OpenAIResponse:
+    """Small response adapter shared by OpenAI-compatible VLM providers."""
+    def __init__(self, text):
+        self.choices = [_OpenAIChoice(text)]
+
+
+def _serialize_openai_response(result):
+    return {"text": result.choices[0].message.content}
+
+
+def _deserialize_openai_response(payload):
+    return _OpenAIResponse(payload.get("text", ""))
+
+
 def _coerce_bytes(data):
     if data is None:
         return b""
@@ -607,6 +636,19 @@ class Gemini(VLM_API):
             "modalities": ["TEXT"],
             "max_tokens": 65535,
         },
+        # OpenAI-compatible hosted vision model. It is handled by the same
+        # call/get_result_text protocol so existing pipeline stages need no
+        # provider-specific changes.
+        DEEPSEEK_VISION_MODEL: {
+            "modalities": ["TEXT"],
+            "max_tokens": 8192,
+            "provider": "deepseek",
+        },
+        QWEN_VISION_MODEL: {
+            "modalities": ["TEXT"],
+            "max_tokens": 8192,
+            "provider": "qwen",
+        },
     }
     def __init__(
         self,
@@ -650,6 +692,79 @@ class Gemini(VLM_API):
             if timeout_ms is not None
             else _remote_timeout_ms("SIMFOUNDRY_GEMINI_TIMEOUT_MS", "SIMFOUNDRY_REMOTE_TIMEOUT_MS", default_ms=300_000)
         )
+        self._openai_client = None
+
+    def _is_openai_compatible(self):
+        return self.VERSIONS[self.model].get("provider") in {"deepseek", "qwen"}
+
+    def _call_openai_compatible(self, prompt, image_paths, temperature, n_retries, print_results):
+        """Call an OpenAI-compatible multimodal Chat Completions API."""
+        provider = self.VERSIONS[self.model]["provider"]
+        if provider == "qwen":
+            api_key_envs, default_base_url, provider_name = QWEN_API_KEY_ENVS, QWEN_BASE_URL, "Qwen"
+        else:
+            api_key_envs, default_base_url, provider_name = DEEPSEEK_API_KEY_ENVS, DEEPSEEK_BASE_URL, "DeepSeek"
+        env_prefix = "DASHSCOPE" if provider == "qwen" else "DEEPSEEK"
+        base_url = os.environ.get(f"{env_prefix}_BASE_URL", default_base_url)
+        cache = RemoteModelCache.from_env()
+        cache_request = {
+            "prompt": prompt,
+            "image_inputs": image_digests(image_paths),
+            "temperature": temperature,
+            "max_tokens": self.VERSIONS[self.model]["max_tokens"],
+            "base_url": base_url,
+        }
+        cache_key = cache.key_for(provider=provider, model=self.model, request=cache_request)
+        if cache.test_enabled:
+            return _deserialize_openai_response(cache.load_response(provider=provider, key=cache_key))
+        if cache.cache_enabled:
+            cached = cache.load_response_if_exists(provider=provider, key=cache_key)
+            if cached is not None:
+                return _deserialize_openai_response(cached)
+
+        api_key = next((os.environ[name] for name in api_key_envs
+                        if os.environ.get(name)), None)
+        if not api_key:
+            raise ValueError(f"{provider_name} requires {api_key_envs[0]} (export it or put it in api_keys.txt).")
+
+        content = []
+        for image_path in image_paths:
+            mime_type = mimetypes.guess_type(str(image_path))[0] or "image/png"
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime_type};base64,{self.encode_image(image_path)}"},
+            })
+        content.append({"type": "text", "text": prompt})
+
+        if self._openai_client is None:
+            self._openai_client = OpenAI(api_key=api_key, base_url=base_url,
+                                         timeout=(self.timeout_ms / 1000 if self.timeout_ms else None))
+        result = None
+        last_exc = None
+        budget = n_retries
+        for attempt in range(budget):
+            try:
+                if self.verbose:
+                    print(f"Querying {provider_name} [{self.model}]: attempt {attempt + 1} of {budget}...", flush=True)
+                result = self._openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": content}],
+                    temperature=temperature,
+                    max_tokens=self.VERSIONS[self.model]["max_tokens"],
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                budget = handle_remote_exception(exc, attempt=attempt, n_retries=budget,
+                                                 provider=provider_name, model=self.model)
+        if result is None:
+            raise RemoteCallFailed(f"{provider_name} [{self.model}] failed after {budget} attempts: {last_exc}") from last_exc
+        if print_results:
+            print(result.choices[0].message.content or "", flush=True)
+        if cache.cache_enabled:
+            cache.store_response(provider=provider, model=self.model, key=cache_key,
+                                 request=cache_request, response=_serialize_openai_response(result))
+        return result
 
     def _resolve_auth(self):
         """Resolve and cache the auth route. Called on the first request, not in
@@ -695,6 +810,8 @@ class Gemini(VLM_API):
             None or list of google.genai.types.GenerateContentResponse: Stream of responses generated from Gemini
         """
         image_paths = [] if image_paths is None else [image_paths] if isinstance(image_paths, (str, os.PathLike)) else list(image_paths)
+        if self._is_openai_compatible():
+            return self._call_openai_compatible(prompt, image_paths, temperature, n_retries, print_results)
         cache = RemoteModelCache.from_env()
         cache_request = {
             "prompt": prompt,
@@ -793,6 +910,8 @@ class Gemini(VLM_API):
         return result
 
     def get_result_text(self, result):
+        if self._is_openai_compatible():
+            return result.choices[0].message.content or ""
         return join_gemini_result_text(result, model=self.model)
 
     def get_result_images(self, result):
@@ -808,6 +927,85 @@ class Gemini(VLM_API):
                     image = PILImage.open(BytesIO(image_data))
                     images.append(image)
         return images
+
+
+class _QwenImageResult:
+    def __init__(self, images):
+        self.images = images
+
+
+class QwenImageEdit(VLM_API):
+    """DashScope Qwen Image editing adapter.
+
+    Qwen image editing uses DashScope's native multimodal-generation endpoint,
+    rather than the OpenAI-compatible text endpoint used by Qwen-VL.
+    """
+    MODEL = "qwen-image-2.0"
+    # Stage 5/6 iterate over this collection as ``(width, height)`` pairs.
+    # Keep the public shape consistent with Gemini's IMAGE_SHAPES rather than
+    # exposing the ratio-name mapping used internally by Gemini.
+    IMAGE_SHAPES = set(Gemini.RESOLUTIONS.values())
+
+    def __init__(self, model=MODEL, timeout_s=300):
+        if model != self.MODEL:
+            raise ValueError(f"Unsupported Qwen image model: {model}")
+        self.model = model
+        self.timeout_s = timeout_s
+
+    @staticmethod
+    def _encode_image(path):
+        mime = mimetypes.guess_type(str(path))[0] or "image/png"
+        with open(path, "rb") as image_file:
+            return f"data:{mime};base64,{base64.b64encode(image_file.read()).decode('ascii')}"
+
+    def __call__(self, prompt, image_paths=None, seed=0, print_results=False, **_kwargs):
+        api_key = os.environ.get("DASHSCOPE_API_KEY")
+        if not api_key:
+            raise ValueError("Qwen image editing requires DASHSCOPE_API_KEY.")
+        paths = [] if image_paths is None else [image_paths] if isinstance(image_paths, (str, os.PathLike)) else list(image_paths)
+        if not paths:
+            raise ValueError("Qwen image editing requires at least one input image.")
+        base_url = os.environ.get(
+            "DASHSCOPE_IMAGE_API_URL",
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+        )
+        payload = {
+            "model": self.model,
+            "input": {"messages": [{
+                "role": "user",
+                "content": [{"image": self._encode_image(path)} for path in paths] + [{"text": prompt}],
+            }]},
+            "parameters": {"n": 1, "prompt_extend": False, "watermark": False, "seed": seed},
+        }
+        request = urllib.request.Request(
+            base_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+                data = json.load(response)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Qwen image API HTTP {exc.code}: {body}") from exc
+        images = []
+        for choice in data.get("output", {}).get("choices", []):
+            for content in choice.get("message", {}).get("content", []):
+                if content.get("image"):
+                    image_url = content["image"]
+                    with urllib.request.urlopen(image_url, timeout=self.timeout_s) as image_response:
+                        image = PILImage.open(BytesIO(image_response.read())).convert("RGB")
+                        image.load()
+                    images.append(image)
+        if not images:
+            raise RuntimeError(f"Qwen image API returned no image: {data}")
+        if print_results:
+            images[0].show()
+        return _QwenImageResult(images)
+
+    def get_result_images(self, result):
+        return result.images
 
 
 class Imagen3(VLM_API):

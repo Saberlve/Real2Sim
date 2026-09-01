@@ -184,6 +184,31 @@ else
 fi
 mamba activate "$ENV_NAME"
 
+# Keep the runtime defaults used by stages 10-13 in every new shell. The stages
+# also set headless mode internally, but the activation hook covers direct
+# OmniGibson/Isaac Sim commands and automatically prefers the shared NAS1 models.
+SIMFOUNDRY_ACTIVATE_DIR="${CONDA_PREFIX}/etc/conda/activate.d"
+SIMFOUNDRY_ACTIVATE_HOOK="${SIMFOUNDRY_ACTIVATE_DIR}/simfoundry_runtime.sh"
+mkdir -p "${SIMFOUNDRY_ACTIVATE_DIR}"
+cat > "${SIMFOUNDRY_ACTIVATE_HOOK}" <<'EOF'
+export OMNI_KIT_ACCEPT_EULA="${OMNI_KIT_ACCEPT_EULA:-YES}"
+export OMNIGIBSON_HEADLESS="${OMNIGIBSON_HEADLESS:-1}"
+
+if [ -z "${SIMFOUNDRY_SAM3_CHECKPOINT:-}" ] && [ -f "/run/determined/NAS1/public/HuggingFace/facebook/sam3/sam3.pt" ]; then
+  export SIMFOUNDRY_SAM3_CHECKPOINT="/run/determined/NAS1/public/HuggingFace/facebook/sam3/sam3.pt"
+fi
+if [ -z "${SIMFOUNDRY_DINOV3_MODEL:-}" ] && [ -f "/run/determined/NAS1/public/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth" ]; then
+  export SIMFOUNDRY_DINOV3_MODEL="/run/determined/NAS1/public/dinov3/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+fi
+if [ -z "${HF_HOME:-}" ] && [ -d "/run/determined/NAS1/public/HuggingFace/vla" ]; then
+  export HF_HOME="/run/determined/NAS1/public/HuggingFace/vla"
+fi
+if [ -z "${HF_HUB_CACHE:-}" ] && [ -d "/run/determined/NAS1/public/HuggingFace/vla/hub" ]; then
+  export HF_HUB_CACHE="/run/determined/NAS1/public/HuggingFace/vla/hub"
+fi
+EOF
+source "${SIMFOUNDRY_ACTIVATE_HOOK}"
+
 pip install opencv-python numpy cython pyopengl requests argparse >> /dev/null
 # Step 2.1.5: Install ZED (optional)
 if [[ ${INSTALL_ZED} == true ]]; then
@@ -248,7 +273,8 @@ pip install packaging ninja
 ensure_cuda_toolkit
 # pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.7cxx11abiFALSE-cp311-cp311-linux_x86_64.whl > /dev/null
 # pip install flash-attn==2.7.3 --no-build-isolation
-pip install flash-attn==2.8.3 --no-build-isolation
+pip install flash-attn==2.7.4.post1 --no-build-isolation
+python -c 'import flash_attn; print("Verified Flash Attention", flash_attn.__version__)'
 echo "Installed Flash Attention for Foundation Stereo"
 cd ..
 
